@@ -32,6 +32,7 @@ def check_password():
                 box-shadow: 0 4px 12px rgba(0,0,0,0.15);
                 text-align: center;
             ">
+                <h2>🎉 Porphyrio 2025 - Dashboard</h2>
                 <h2>🔐 Login</h2>
                 <p>Insira a senha para acessar o sistema</p>
         """,
@@ -55,9 +56,17 @@ def check_password():
 
     return False
 
+def extract_bimestre_data(file, bimestre_label):
+    try:
+        df = pd.read_excel(file, header=None)
+    except Exception as e:
+        st.error(...)
+        return ...
+
+
 
 # -----------------------------------------------------------
-# FUNÇÃO PARA EXTRAIR UM BIMESTRE
+# FUNÇÃO PARA EXTRAIR UM BIMESTRE (INCLUÍDA AQUI)
 # -----------------------------------------------------------
 def extract_bimestre_data(file, bimestre_label):
     try:
@@ -90,22 +99,40 @@ def extract_bimestre_data(file, bimestre_label):
     df_data = df.iloc[data_start:].copy()
     df_data.columns = columns
 
-    # -----------------------------------------------------------
-    # DETECTAR COLUNA DE ALUNO
-    # -----------------------------------------------------------
-    forbidden = ["EP", "ES", "EI", "EE", "ENGAJAMENTO", "PARCIAL", "PRESENÇA", "FALTA"]
+    # REMOVER A PARTIR DE "LEGENDA"
+    mask_legenda = df.astype(str).apply(
+        lambda row: row.str.contains("Legenda", case=False, na=False)
+    ).any(axis=1)
 
-    possible_name_cols = [
-        c for c in df_data.columns
-        if re.search(r"aluno|nome", c, re.IGNORECASE)
-        and all(f not in c.upper() for f in forbidden)
+    if mask_legenda.any():
+        first_legenda_row = mask_legenda.idxmax()
+        df = df.iloc[:first_legenda_row].copy()
+
+
+    # -----------------------------------------------------------
+    # DETECÇÃO DE NOME DO ALUNO
+    # -----------------------------------------------------------
+    forbidden = [
+        "EP - Engajamento Parcial",
+        "ES - Engajamento Satisfatório",
+        "ET - Engajamento Total",
+        "AC - Ausência Compensada",
     ]
 
-    if len(possible_name_cols) == 0:
-        text_ratio = df_data.apply(lambda col: col.astype(str).str.contains(r"[A-Za-z]", regex=True).mean())
-        name_col = text_ratio.idxmax()
-    else:
+    possible_name_cols = [
+        c for c in df_data.columns if re.search(r"aluno|nome", c, re.IGNORECASE)
+    ]
+
+    if len(possible_name_cols) > 0:
         name_col = possible_name_cols[0]
+    else:
+        def score_column(col):
+            series = df_data[col].astype(str)
+            long_text_ratio = series.apply(lambda x: len(x.strip()) >= 6).mean()
+            concept_ratio = series.str.upper().isin(forbidden).mean()
+            return long_text_ratio - 2 * concept_ratio
+
+        name_col = max(df_data.columns, key=score_column)
 
     df_data["Aluno"] = df_data[name_col]
     df_data = df_data.dropna(subset=["Aluno"])
@@ -113,12 +140,20 @@ def extract_bimestre_data(file, bimestre_label):
     # -----------------------------------------------------------
     # Filtrar notas
     # -----------------------------------------------------------
-    nota_cols = [c for c in df_data.columns if re.search(r"(MÉDIA|_M$|M$|NOTA)", c, re.IGNORECASE)]
+    nota_cols = [
+        c for c in df_data.columns
+        if re.search(r"(MÉDIA|_M$|M$|NOTA)", c, re.IGNORECASE)
+    ]
+
     if not nota_cols:
         return pd.DataFrame(columns=["Turma", "Aluno", "Disciplina", "Nota", "Bimestre"])
 
-    melted = df_data.melt(id_vars=["Aluno"], value_vars=nota_cols,
-                          var_name="Disciplina", value_name="Nota")
+    melted = df_data.melt(
+        id_vars=["Aluno"],
+        value_vars=nota_cols,
+        var_name="Disciplina",
+        value_name="Nota"
+    )
 
     melted["Disciplina"] = (
         melted["Disciplina"]
@@ -128,14 +163,6 @@ def extract_bimestre_data(file, bimestre_label):
 
     melted["Bimestre"] = bimestre_label
 
-    # -----------------------------------------------------------
-    # SISTEMA SEM FUTUREWARNING:
-    # 1. converte números
-    # 2. converte conceitos ET/ES/EP
-    # 3. aplica apenas a disciplinas específicas
-    # -----------------------------------------------------------
-
-    # Tentativa inicial de número (gera NaN quando é conceito)
     melted["Nota_num"] = pd.to_numeric(melted["Nota"], errors="coerce")
 
     conceitos = {"ET": 10, "ES": 5, "EP": 4}
@@ -151,7 +178,6 @@ def extract_bimestre_data(file, bimestre_label):
         .fillna(melted.loc[mask, "Nota_num"])
     )
 
-    # Nota final numérica
     melted["Nota"] = pd.to_numeric(melted["Nota"], errors="coerce")
     melted.drop(columns=["Nota_num"], inplace=True)
 
@@ -245,17 +271,16 @@ if len(uploaded_files) > 0:
         st.error("❌ Arquivo inválido: falta coluna Bimestre.")
         st.stop()
 
-    # Recalcular ordem dos bimestres por turma
     df["Bimestre_Num"] = df["Bimestre"].str.extract(r"(\d+)").astype(float)
-    df["Bimestre"] = df.groupby("Turma")["Bimestre_Num"].rank(method="dense").astype(int).astype(str) + "º Bimestre"
+    df["Bimestre"] = (
+        df.groupby("Turma")["Bimestre_Num"].rank(method="dense").astype(int).astype(str)
+        + "º Bimestre"
+    )
 
     turma_opcoes = sorted(df["Turma"].dropna().unique())
     turma_selecionada = st.selectbox("🏫 Selecione a sala:", turma_opcoes)
     df_turma = df[df["Turma"] == turma_selecionada]
 
-    # -----------------------------------------------------------
-    # ABAS
-    # -----------------------------------------------------------
     tab_turma, tab_aluno, tab_heat = st.tabs([
         "📈 Por Disciplina (Turma)",
         "👩‍🎓 Por Aluno",
